@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cassert>
 #include <stack>
+#include <stdexcept>
 
+std::vector<std::string> ParseWay(const std::string& str);
 bool IsDigit(char c);
 bool CheckKeyValidity(std::string_view key);
 omfl::Types GetValueType(std::string_view value);
@@ -11,7 +13,9 @@ std::pair<std::any, bool> ConvertValue(const std::string& value, const omfl::Typ
 void PrettifyString(std::string& str);
 std::pair<std::vector<std::string>, bool> ParseSections(std::string_view str, size_t& index);
 
-omfl::Item::Item() = default;
+omfl::Item::Item()
+    : value_type(Types::Undefined)
+{};
 
 omfl::Item::Item(std::string_view _key, const std::any& _value, const Types& _value_type)
     : key(_key)
@@ -19,11 +23,146 @@ omfl::Item::Item(std::string_view _key, const std::any& _value, const Types& _va
     , value_type(_value_type)
 {}
 
-omfl::ValueArray::ValueArray() = default;
+std::vector<std::string> ParseWay(const std::string& str) {
+    std::vector<std::string> result;
+    std::string buff;
+
+    for (auto c: str) {
+        if (c == '.') {
+            result.emplace_back(buff);
+            buff.clear();
+        } else {
+            buff.push_back(c);
+        }
+    }
+
+    if (!buff.empty()) {
+        result.emplace_back(buff);
+    }
+
+    return result;
+}
+
+const omfl::Item& omfl::Item::Get(const std::string& name) const {
+    if (name.find('.') != std::string::npos) {
+        return Get(ParseWay(name), 0);
+    }
+
+    if (value_type != Types::Section) {
+        return *this;
+    }
+
+    const std::map<std::string, Item>& items = std::any_cast<const std::map<std::string, Item>&>(value);
+
+    if (items.find(name) == items.end()) {
+        throw std::runtime_error("Addressing to an non-existing key/section.");
+    }
+
+    return items.at(name);
+}
+
+const omfl::Item& omfl::Item::Get(const std::vector<std::string>& way, size_t current) const {
+    if (current == way.size()) {
+        return *this;
+    }
+
+    const std::map<std::string, Item>& items = std::any_cast<const std::map<std::string, Item>&>(value);
+
+    return items.at(way[current]).Get(way, current + 1);
+}
+
+bool omfl::Item::IsInt() const {
+    return value_type == Types::Integer;
+}
+
+int32_t omfl::Item::AsInt() const {
+    return std::any_cast<int32_t>(value);
+}
+
+int32_t omfl::Item::AsIntOrDefault(int32_t value) const {
+    if (IsInt()) {
+        return AsInt();
+    }
+
+    return value;
+}
+
+bool omfl::Item::IsFloat() const {
+    return value_type == Types::Float;
+}
+
+double omfl::Item::AsFloat() const {
+    return std::any_cast<double>(value);
+}
+
+double omfl::Item::AsFloatOrDefault(double value) const {
+    if (IsFloat()) {
+        return AsFloat();
+    }
+
+    return value;
+}
+
+bool omfl::Item::IsString() const {
+    return value_type == Types::String;
+}
+
+std::string_view omfl::Item::AsString() const {
+    return std::any_cast<const std::string&>(value);
+}
+
+std::string_view omfl::Item::AsStringOrDefault(std::string_view value) const {
+    if (IsString()) {
+        return AsString();
+    }
+
+    return value;
+}
+
+bool omfl::Item::IsBool() const {
+    return value_type == Types::Boolean;
+}
+
+bool omfl::Item::AsBool() const {
+    return std::any_cast<bool>(value);
+}
+
+bool omfl::Item::AsBoolOrDefault(bool value) const {
+    if (IsBool()) {
+        return AsBool();
+    }
+
+    return value;
+}
+
+bool omfl::Item::IsArray() const {
+    return value_type == Types::Array;
+}
+
+const omfl::Item& omfl::Item::operator[](size_t index) const {
+    if (!IsArray()) {
+        throw std::runtime_error("Trying to access non-accessible value.");
+    }
+
+    const ValueArray& array = std::any_cast<const ValueArray&>(value);
+
+    return array.Get(index);
+}
+
+omfl::ValueArray::ValueArray()
+    : trash_item_(Item("", "", Types::Undefined))
+{}
 
 void omfl::ValueArray::Add(const std::any& value, const Types& type) {
-    values_.emplace_back(value);
-    types_.emplace_back(type);
+    values_.push_back(Item("", value, type));
+}
+
+const omfl::Item& omfl::ValueArray::Get(size_t index) const {
+    if (index >= values_.size()) {
+        return trash_item_;
+    }
+
+    return values_[index];
 }
 
 omfl::Parser::Parser()
@@ -38,46 +177,44 @@ void omfl::Parser::MarkUnsuccessful() {
     successful_parse_ = false;
 }
 
-void omfl::Parser::Add(const std::vector<std::string>& section_way, const Item& appending_item) {
-    tree_.AddItem(section_way, appending_item);
+bool omfl::Parser::Add(const std::vector<std::string>& section_way, const Item& appending_item) {
+    return tree_.AddItem(section_way, appending_item);
 }
 
-omfl::Parser::Trie::Node::Node() = default;
-
-omfl::Parser::Trie::Node::Node(const Node& other) = default;
-
-omfl::Parser::Trie::Node& omfl::Parser::Trie::Node::operator=(const Node& other) = default;
-
-omfl::Parser::Trie::Node::~Node() {
-    for (const auto& [section_name, section_content]: next_sections) {
-        delete section_content;
-    }
+const omfl::Item& omfl::Parser::Get(const std::string& name) const {
+    return tree_.GetItem(name);
 }
 
 omfl::Parser::Trie::Trie() {
-    root_ = new Node();
+    root_ = Item("", std::map<std::string, Item>(), Types::Section);
 }
 
-omfl::Parser::Trie::Trie(const Trie& other) = default;
+bool omfl::Parser::Trie::AddItem(const std::vector<std::string>& section_way, const Item& appending_item) {
+    Item* current_node = &root_;
+    
+    for (const auto& section: section_way) {
+        std::map<std::string, Item>& items = std::any_cast<std::map<std::string, Item>&>(current_node->value);
 
-omfl::Parser::Trie& omfl::Parser::Trie::operator=(const Trie& other) = default;
-
-omfl::Parser::Trie::~Trie() {
-    delete root_;
-}
-
-void omfl::Parser::Trie::AddItem(const std::vector<std::string>& section_way, const Item& appending_item) {
-    Node* current_node = root_;
-
-    for (auto section: section_way) {
-        if (current_node->next_sections.find(section) == current_node->next_sections.end()) {
-            current_node->next_sections[section] = new Node();
+        if (items.find(section) == items.end()) {
+            items[section] = Item(section, std::map<std::string, Item>(), Types::Section);
         }
 
-        current_node = current_node->next_sections[section];
+        current_node = &items[section];
     }
 
-    current_node->items[appending_item.key] = appending_item;
+    std::map<std::string, Item>& items = std::any_cast<std::map<std::string, Item>&>(current_node->value);
+
+    if (items.find(appending_item.key) != items.end()) {
+        return false;
+    }
+
+    items[appending_item.key] = appending_item;
+
+    return true;
+}
+
+const omfl::Item& omfl::Parser::Trie::GetItem(const std::string& name) const {
+    return root_.Get(name);
 }
 
 omfl::Parser omfl::parse(const std::filesystem::path& path) {
@@ -270,7 +407,7 @@ std::pair<std::any, bool> ConvertValue(const std::string& value, const omfl::Typ
     } else if (type == Types::Float) {
         return {std::any(std::stod(value)), true};
     } else if (type == Types::String) {
-        return {std::any(value), true};
+        return {std::any(value.substr(1, value.size() - 2)), true};
     } else if (type == Types::Boolean) {
         if (value == "true") {
             return {std::any(true), true};
@@ -303,6 +440,10 @@ void PrettifyString(std::string& str) {
 bool omfl::Update(omfl::Parser& parser, const std::vector<std::string>& current_sections, std::string& current_key, std::string& current_value) {
     PrettifyString(current_key);
     PrettifyString(current_value);
+    
+    if (current_key.empty() && current_value.empty()) {
+        return true;
+    }
 
     if (!CheckKeyValidity(current_key)) {
         return false;
@@ -320,7 +461,11 @@ bool omfl::Update(omfl::Parser& parser, const std::vector<std::string>& current_
         return false;
     }
 
-    parser.Add(current_sections, Item(current_key, converted_value, value_type));
+    bool ok = parser.Add(current_sections, Item(current_key, converted_value, value_type));
+
+    if (!ok) {
+        return false;
+    }
 
     current_key.clear();
     current_value.clear();
@@ -362,7 +507,8 @@ omfl::Parser omfl::parse(const std::string& str) {
         char character = str[index];
 
         if (character == '[' && !equal_sign_seen) {
-            auto [current_sections, successful] = ParseSections(str, ++index);
+            auto [current_sections_, successful] = ParseSections(str, ++index);
+            current_sections = current_sections_;
 
             if (!successful) {
                 parser.MarkUnsuccessful();
@@ -386,6 +532,8 @@ omfl::Parser omfl::parse(const std::string& str) {
 
                 break;
             }
+
+            continue;
         }
 
         if (character == '#' && !in_string) {
