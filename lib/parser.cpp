@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <fstream>
 #include <stack>
 #include <stdexcept>
 
@@ -215,11 +216,6 @@ bool omfl::Parser::Trie::AddItem(const std::vector<std::string>& section_way, co
 
 const omfl::Item& omfl::Parser::Trie::GetItem(const std::string& name) const {
     return root_.Get(name);
-}
-
-omfl::Parser omfl::parse(const std::filesystem::path& path) {
-    // TODO
-    return Parser();
 }
 
 bool IsDigit(char c) {
@@ -491,6 +487,114 @@ std::pair<std::vector<std::string>, bool> ParseSections(std::string_view str, si
     assert(buff.empty());
 
     return {result, ok};
+}
+
+std::pair<std::vector<std::string>, bool> ParseSections(std::ifstream& stream, size_t& index) {
+    std::vector<std::string> result;
+    std::string buff;
+    bool ok = true;
+    char character = '#';
+
+    for (; stream.get(character) && character != '\n'; ++index) {
+        if (character == '.' || character == ']') {
+            ok &= CheckKeyValidity(buff);
+            result.emplace_back(buff);
+            buff.clear();
+        } else {
+            buff += character;
+        }
+    }
+
+    assert(buff.empty());
+
+    return {result, ok};
+}
+
+omfl::Parser omfl::parse(const std::filesystem::path& path) {
+    Parser parser;
+    std::ifstream stream(path);
+
+    if (!stream.is_open()) {
+        throw std::runtime_error("No such file as " + path.filename().string());
+    }
+
+    std::vector<std::string> current_sections;
+    std::string current_key;
+    std::string current_value;
+    bool equal_sign_seen = false;
+    bool in_string = false;
+    bool ignore = false;
+    char character;
+
+    for (size_t index = 0; stream.get(character); ++index) {
+        if (character == '[' && !equal_sign_seen) {
+            auto [current_sections_, successful] = ParseSections(stream, ++index);
+            current_sections = current_sections_;
+
+            if (!successful) {
+                parser.MarkUnsuccessful();
+
+                break;
+            }
+
+            current_key.clear();
+            current_value.clear();
+
+            continue;
+        }
+        
+        if (character == '\n') {
+            equal_sign_seen = false;
+            in_string = false;
+            ignore = false;
+
+            if (!Update(parser, current_sections, current_key, current_value)) {
+                parser.MarkUnsuccessful();
+
+                break;
+            }
+
+            continue;
+        }
+
+        if (character == '#' && !in_string) {
+            ignore = true;
+        }
+
+        if (ignore) {
+            continue;
+        }
+
+        if (character == '=' && !in_string) {
+            if (equal_sign_seen) {
+                parser.MarkUnsuccessful();
+                
+                break;
+            }
+
+            equal_sign_seen = true;
+
+            continue;
+        }
+
+        if (!equal_sign_seen) {
+            current_key.push_back(character);
+        } else {
+            if (character == '\"') {
+                in_string ^= 1;
+            }
+
+            current_value.push_back(character);
+        }
+    }
+
+    if ((!current_key.empty() || !current_value.empty()) && parser.valid()) {
+        if (!Update(parser, current_sections, current_key, current_value)) {
+            parser.MarkUnsuccessful();
+        }
+    }
+
+    return parser;
 }
 
 omfl::Parser omfl::parse(const std::string& str) {
