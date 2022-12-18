@@ -10,7 +10,7 @@
 #include <vector>
 
 namespace omfl {
-    enum Types {
+    enum Type {
         Undefined,
         Integer,
         Float,
@@ -22,15 +22,14 @@ namespace omfl {
 
     class Item {
     public:
-        std::string key;
-        std::any value;
-        Types value_type;
+        explicit Item(std::string_view _key, const std::any& _value, Type _value_type);
 
-        Item();
-        explicit Item(std::string_view _key, const std::any& _value, const Types& _value_type);
+        const std::string& GetKey() const;
+        std::any& GetValue();
+        const Type GetType() const;
 
-        const Item& Get(const std::string& name) const;
-        const Item& Get(const std::vector<std::string>& way, size_t current) const;
+        const Item& Get(std::string_view name) const;
+        const Item& Get(const std::vector<std::string_view>& way, size_t index) const;
         
         bool IsInt() const;
         int32_t AsInt() const;
@@ -50,13 +49,17 @@ namespace omfl {
 
         bool IsArray() const;
         const Item& operator[](size_t index) const;
+    private:
+        std::string key;
+        std::any value;
+        Type value_type = Type::Undefined;
     };
 
     class ValueArray {
     public:
         ValueArray();
 
-        void Add(const std::any& value, const Types& type);
+        void Add(const std::any& value, Type type);
         const Item& Get(size_t index) const;
     private:
         std::vector<Item> values_;
@@ -65,29 +68,25 @@ namespace omfl {
 
     class Parser {
     public:
-        Parser();
-
         bool valid() const;
         void MarkUnsuccessful();
 
         bool Add(const std::vector<std::string>& section_way, const Item& appending_item);
-        const Item& Get(const std::string& name) const;
+        const Item& Get(std::string_view name) const;
     private:
         class Trie {
         public:
             Trie();
-
+        
             bool AddItem(const std::vector<std::string>& section_way, const Item& appending_item);
-            const Item& GetItem(const std::string& name) const;
+            const Item& GetItem(std::string_view name) const;
         private:
             Item root_;
         } tree_;
 
-        bool successful_parse_;
+        bool successful_parse_ = true;
     };
 
-    std::pair<std::any, bool> ConstructValueArray(const std::string& value);
-    bool Update(Parser& parser, const std::vector<std::string>& current_sections, std::string& current_key, std::string& current_value);
     Parser parse(const std::filesystem::path& path);
     Parser parse(const std::string& str);
 }

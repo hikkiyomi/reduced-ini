@@ -6,74 +6,84 @@
 #include <stack>
 #include <stdexcept>
 
-std::vector<std::string> ParseWay(const std::string& str);
-bool IsDigit(char c);
+std::vector<std::string_view> ParseWay(std::string_view str);
 bool CheckKeyValidity(std::string_view key);
-omfl::Types GetValueType(std::string_view value);
-std::pair<std::any, bool> ConvertValue(const std::string& value, const omfl::Types& type);
+omfl::Type GetValueType(std::string_view value);
+std::pair<std::any, bool> ConvertValue(const std::string& value, const omfl::Type& type);
 void PrettifyString(std::string& str);
 std::pair<std::vector<std::string>, bool> ParseSections(std::string_view str, size_t& index);
+std::pair<std::any, bool> ConstructValueArray(std::string_view value);
+bool Update(omfl::Parser& parser, const std::vector<std::string>& current_sections, std::string& current_key, std::string& current_value);
 
-omfl::Item::Item()
-    : value_type(Types::Undefined)
-{};
-
-omfl::Item::Item(std::string_view _key, const std::any& _value, const Types& _value_type)
+omfl::Item::Item(std::string_view _key, const std::any& _value, Type _value_type)
     : key(_key)
     , value(_value)
     , value_type(_value_type)
 {}
 
-std::vector<std::string> ParseWay(const std::string& str) {
-    std::vector<std::string> result;
-    std::string buff;
+const std::string& omfl::Item::GetKey() const {
+    return key;
+}
 
-    for (auto c: str) {
+std::any& omfl::Item::GetValue() {
+    return value;
+}
+
+const omfl::Type omfl::Item::GetType() const {
+    return value_type;
+}
+
+std::vector<std::string_view> ParseWay(std::string_view str) {
+    std::vector<std::string_view> result;
+    int last_string_index = 0;
+    size_t index = 0;
+
+    for (; index < str.size(); ++index) {
+        char c = str[index];
+
         if (c == '.') {
-            result.emplace_back(buff);
-            buff.clear();
-        } else {
-            buff.push_back(c);
+            result.emplace_back(str.substr(last_string_index, index - last_string_index));
+            last_string_index = index + 1;
         }
     }
 
-    if (!buff.empty()) {
-        result.emplace_back(buff);
+    if (index - last_string_index + 1 > 0) {
+        result.emplace_back(str.substr(last_string_index, index - last_string_index + 1));
     }
 
     return result;
 }
 
-const omfl::Item& omfl::Item::Get(const std::string& name) const {
+const omfl::Item& omfl::Item::Get(std::string_view name) const {
     if (name.find('.') != std::string::npos) {
         return Get(ParseWay(name), 0);
     }
 
-    if (value_type != Types::Section) {
+    if (value_type != Type::Section) {
         return *this;
     }
 
-    const std::map<std::string, Item>& items = std::any_cast<const std::map<std::string, Item>&>(value);
+    const auto& items = std::any_cast<const std::map<std::string, Item, std::less<>>&>(value);
 
     if (items.find(name) == items.end()) {
         throw std::runtime_error("Addressing to an non-existing key/section.");
     }
 
-    return items.at(name);
+    return items.find(name)->second;
 }
 
-const omfl::Item& omfl::Item::Get(const std::vector<std::string>& way, size_t current) const {
-    if (current == way.size()) {
+const omfl::Item& omfl::Item::Get(const std::vector<std::string_view>& way, size_t index) const {
+    if (index == way.size()) {
         return *this;
     }
 
-    const std::map<std::string, Item>& items = std::any_cast<const std::map<std::string, Item>&>(value);
+    const auto& items = std::any_cast<const std::map<std::string, Item, std::less<>>&>(value);
 
-    return items.at(way[current]).Get(way, current + 1);
+    return items.find(way[index])->second.Get(way, index + 1);
 }
 
 bool omfl::Item::IsInt() const {
-    return value_type == Types::Integer;
+    return value_type == Type::Integer;
 }
 
 int32_t omfl::Item::AsInt() const {
@@ -89,7 +99,7 @@ int32_t omfl::Item::AsIntOrDefault(int32_t value) const {
 }
 
 bool omfl::Item::IsFloat() const {
-    return value_type == Types::Float;
+    return value_type == Type::Float;
 }
 
 double omfl::Item::AsFloat() const {
@@ -105,7 +115,7 @@ double omfl::Item::AsFloatOrDefault(double value) const {
 }
 
 bool omfl::Item::IsString() const {
-    return value_type == Types::String;
+    return value_type == Type::String;
 }
 
 std::string_view omfl::Item::AsString() const {
@@ -121,7 +131,7 @@ std::string_view omfl::Item::AsStringOrDefault(std::string_view value) const {
 }
 
 bool omfl::Item::IsBool() const {
-    return value_type == Types::Boolean;
+    return value_type == Type::Boolean;
 }
 
 bool omfl::Item::AsBool() const {
@@ -137,7 +147,7 @@ bool omfl::Item::AsBoolOrDefault(bool value) const {
 }
 
 bool omfl::Item::IsArray() const {
-    return value_type == Types::Array;
+    return value_type == Type::Array;
 }
 
 const omfl::Item& omfl::Item::operator[](size_t index) const {
@@ -151,24 +161,20 @@ const omfl::Item& omfl::Item::operator[](size_t index) const {
 }
 
 omfl::ValueArray::ValueArray()
-    : trash_item_(Item("", "", Types::Undefined))
+    : trash_item_(Item("", "", Type::Undefined))
 {}
 
-void omfl::ValueArray::Add(const std::any& value, const Types& type) {
+void omfl::ValueArray::Add(const std::any& value, Type type) {
     values_.push_back(Item("", value, type));
 }
 
 const omfl::Item& omfl::ValueArray::Get(size_t index) const {
-    if (index >= values_.size()) {
-        return trash_item_;
+    if (index < values_.size()) {
+        return values_[index];
     }
 
-    return values_[index];
+    return trash_item_;
 }
-
-omfl::Parser::Parser()
-    : successful_parse_(true)
-{}
 
 bool omfl::Parser::valid() const {
     return successful_parse_;
@@ -182,44 +188,40 @@ bool omfl::Parser::Add(const std::vector<std::string>& section_way, const Item& 
     return tree_.AddItem(section_way, appending_item);
 }
 
-const omfl::Item& omfl::Parser::Get(const std::string& name) const {
+const omfl::Item& omfl::Parser::Get(std::string_view name) const {
     return tree_.GetItem(name);
 }
 
-omfl::Parser::Trie::Trie() {
-    root_ = Item("", std::map<std::string, Item>(), Types::Section);
-}
+omfl::Parser::Trie::Trie()
+    : root_(Item("", std::map<std::string, Item, std::less<>>(), Type::Section))
+{}
 
 bool omfl::Parser::Trie::AddItem(const std::vector<std::string>& section_way, const Item& appending_item) {
     Item* current_node = &root_;
     
     for (const auto& section: section_way) {
-        std::map<std::string, Item>& items = std::any_cast<std::map<std::string, Item>&>(current_node->value);
+        auto& items = std::any_cast<std::map<std::string, Item, std::less<>>&>(current_node->GetValue());
 
         if (items.find(section) == items.end()) {
-            items[section] = Item(section, std::map<std::string, Item>(), Types::Section);
+            items.insert({section, Item(section, std::map<std::string, Item, std::less<>>(), Type::Section)});
         }
 
-        current_node = &items[section];
+        current_node = &items.at(section);
     }
 
-    std::map<std::string, Item>& items = std::any_cast<std::map<std::string, Item>&>(current_node->value);
+    auto& items = std::any_cast<std::map<std::string, Item, std::less<>>&>(current_node->GetValue());
 
-    if (items.find(appending_item.key) != items.end()) {
+    if (items.find(appending_item.GetKey()) != items.end()) {
         return false;
     }
 
-    items[appending_item.key] = appending_item;
+    items.insert({appending_item.GetKey(), appending_item});
 
     return true;
 }
 
-const omfl::Item& omfl::Parser::Trie::GetItem(const std::string& name) const {
+const omfl::Item& omfl::Parser::Trie::GetItem(std::string_view name) const {
     return root_.Get(name);
-}
-
-bool IsDigit(char c) {
-    return '0' <= c && c <= '9';
 }
 
 bool CheckKeyValidity(std::string_view key) {
@@ -229,9 +231,7 @@ bool CheckKeyValidity(std::string_view key) {
 
     for (auto character: key) {
         if (
-            !('a' <= character && character <= 'z') &&
-            !('A' <= character && character <= 'Z') &&
-            !IsDigit(character) &&
+            !std::isalnum(character) &&
             !(character == '-' || character == '_')
         ) {
             return false;
@@ -241,20 +241,20 @@ bool CheckKeyValidity(std::string_view key) {
     return true;
 }
 
-omfl::Types GetValueType(std::string_view value) {
-    using omfl::Types;
+omfl::Type GetValueType(std::string_view value) {
+    using omfl::Type;
     
     if (value.empty()) {
-        return Types::Undefined;
+        return Type::Undefined;
     }
 
     if (value[0] == '\"' && value.back() == '\"') {
         // Presumably, it is a string.
 
         if (std::count(value.begin(), value.end(), '\"') == 2) {
-            return Types::String;
+            return Type::String;
         } else {
-            return Types::Undefined;
+            return Type::Undefined;
         }
     } else if (value[0] == '[' && value.back() == ']') {
         int32_t balance = 0;
@@ -264,7 +264,7 @@ omfl::Types GetValueType(std::string_view value) {
                 ++balance;
             } else if (character == ']') {
                 if (balance == 0) {
-                    return Types::Undefined;
+                    return Type::Undefined;
                 }
 
                 --balance;
@@ -272,26 +272,26 @@ omfl::Types GetValueType(std::string_view value) {
         }
 
         if (balance > 0) {
-            return Types::Undefined;
+            return Type::Undefined;
         }
 
-        return Types::Array;
+        return Type::Array;
     } else if (value == "true" || value == "false") {
-        return Types::Boolean;
+        return Type::Boolean;
     } else {
         if (value[0] == '.') {
-            return Types::Undefined;
+            return Type::Undefined;
         }
 
         if ((value[0] == '+' || value[0] == '-') && value.size() == 1) {
-            return Types::Undefined;
+            return Type::Undefined;
         }
 
         if (
-            !IsDigit(value[0]) &&
+            !std::isdigit(value[0]) &&
             !(value[0] == '+' || value[0] == '-')
         ) {
-            return Types::Undefined;
+            return Type::Undefined;
         }
 
         size_t pluses = 0;
@@ -309,40 +309,40 @@ omfl::Types GetValueType(std::string_view value) {
             } else if (character == '.') {
                 ++points;
                 point_index = i;
-            } else if (!IsDigit(character)){
-                return Types::Undefined;
+            } else if (!std::isdigit(character)){
+                return Type::Undefined;
             }
         }
 
         if (pluses + minuses > 1 || points > 1) {
-            return Types::Undefined;
+            return Type::Undefined;
         }
 
         if ((pluses == 1 || minuses == 1) && value[0] != '+' && value[0] != '-') {
-            return Types::Undefined;
+            return Type::Undefined;
         }
 
         if (points > 0) {
             assert(point_index != value.size() + 1);
             
             if (
-                (point_index == 1 && !IsDigit(value[0])) ||
+                (point_index == 1 && !std::isdigit(value[0])) ||
                 point_index == value.size() - 1
             ) {
-                return Types::Undefined;
+                return Type::Undefined;
             }
 
-            return Types::Float;
+            return Type::Float;
         }
 
-        return Types::Integer;
+        return Type::Integer;
     }
 
-    return Types::Undefined;
+    return Type::Undefined;
 }
 
-std::pair<std::any, bool> omfl::ConstructValueArray(const std::string& value) {
-    using omfl::Types;
+std::pair<std::any, bool> ConstructValueArray(std::string_view value) {
+    using omfl::Type;
 
     omfl::ValueArray result;
     std::string buff;
@@ -357,9 +357,9 @@ std::pair<std::any, bool> omfl::ConstructValueArray(const std::string& value) {
 
             PrettifyString(buff);
 
-            Types type = GetValueType(buff);
+            Type type = GetValueType(buff);
 
-            if (type == Types::Undefined) {
+            if (type == Type::Undefined) {
                 ok = false;
 
                 break;
@@ -395,26 +395,26 @@ std::pair<std::any, bool> omfl::ConstructValueArray(const std::string& value) {
     return {result, ok};
 }
 
-std::pair<std::any, bool> ConvertValue(const std::string& value, const omfl::Types& type) {
-    using omfl::Types;
+std::pair<std::any, bool> ConvertValue(const std::string& value, const omfl::Type& type) {
+    using omfl::Type;
 
-    if (type == Types::Integer) {
-        return {std::any(std::stoi(value)), true};
-    } else if (type == Types::Float) {
-        return {std::any(std::stod(value)), true};
-    } else if (type == Types::String) {
-        return {std::any(value.substr(1, value.size() - 2)), true};
-    } else if (type == Types::Boolean) {
+    if (type == Type::Integer) {
+        return {std::stoi(value), true};
+    } else if (type == Type::Float) {
+        return {std::stod(value), true};
+    } else if (type == Type::String) {
+        return {value.substr(1, value.size() - 2), true};
+    } else if (type == Type::Boolean) {
         if (value == "true") {
-            return {std::any(true), true};
+            return {true, true};
         }
 
-        return {std::any(false), true};
+        return {false, true};
     }
 
-    assert(type == Types::Array);
+    assert(type == Type::Array);
 
-    return omfl::ConstructValueArray(value);
+    return ConstructValueArray(value);
 }
 
 void PrettifyString(std::string& str) {
@@ -433,7 +433,7 @@ void PrettifyString(std::string& str) {
     str = str.substr(prefix_spaces);
 }
 
-bool omfl::Update(omfl::Parser& parser, const std::vector<std::string>& current_sections, std::string& current_key, std::string& current_value) {
+bool Update(omfl::Parser& parser, const std::vector<std::string>& current_sections, std::string& current_key, std::string& current_value) {
     PrettifyString(current_key);
     PrettifyString(current_value);
     
@@ -445,9 +445,9 @@ bool omfl::Update(omfl::Parser& parser, const std::vector<std::string>& current_
         return false;
     }
 
-    Types value_type = GetValueType(current_value);
+    omfl::Type value_type = GetValueType(current_value);
 
-    if (value_type == Types::Undefined) {
+    if (value_type == omfl::Type::Undefined) {
         return false;
     }
 
@@ -457,7 +457,7 @@ bool omfl::Update(omfl::Parser& parser, const std::vector<std::string>& current_
         return false;
     }
 
-    bool ok = parser.Add(current_sections, Item(current_key, converted_value, value_type));
+    bool ok = parser.Add(current_sections, omfl::Item(current_key, converted_value, value_type));
 
     if (!ok) {
         return false;
@@ -489,25 +489,17 @@ std::pair<std::vector<std::string>, bool> ParseSections(std::string_view str, si
     return {result, ok};
 }
 
-std::pair<std::vector<std::string>, bool> ParseSections(std::ifstream& stream, size_t& index) {
-    std::vector<std::string> result;
+std::pair<std::vector<std::string>, bool> ParseSections(std::ifstream& stream) {
     std::string buff;
-    bool ok = true;
-    char character = '#';
+    char character;
 
-    for (; stream.get(character) && character != '\n'; ++index) {
-        if (character == '.' || character == ']') {
-            ok &= CheckKeyValidity(buff);
-            result.emplace_back(buff);
-            buff.clear();
-        } else {
-            buff += character;
-        }
+    for (; stream.get(character) && character != '\n';) {
+        buff.push_back(character);
     }
+    
+    size_t starting_index = 0;
 
-    assert(buff.empty());
-
-    return {result, ok};
+    return ParseSections(buff, starting_index);
 }
 
 omfl::Parser omfl::parse(const std::filesystem::path& path) {
@@ -528,7 +520,7 @@ omfl::Parser omfl::parse(const std::filesystem::path& path) {
 
     for (size_t index = 0; stream.get(character); ++index) {
         if (character == '[' && !equal_sign_seen) {
-            auto [current_sections_, successful] = ParseSections(stream, ++index);
+            auto [current_sections_, successful] = ParseSections(stream);
             current_sections = current_sections_;
 
             if (!successful) {
